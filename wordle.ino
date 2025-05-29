@@ -1,4 +1,4 @@
- #include <SPI.h>
+#include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 
@@ -16,26 +16,31 @@
 Adafruit_ILI9341 display = Adafruit_ILI9341(PIN_CS1, PIN_DC, PIN_RES);
 
 // --- PS/2 handling ---
-volatile byte ps2_data = 0;
+volatile byte ps2_data = 0; // the code
 volatile bool ps2_data_ready = false;
 volatile byte bitCount = 0;
+volatile bool breakCode = false;
 
 void ps2_clk_isr() {
   static byte data = 0;
-  static byte bitsRead = 0;
   bool bit = digitalRead(PS2_DATA);
 
   if (bitCount == 0) {
     data = 0;
-    bitsRead = 0;
   } else if (bitCount >= 1 && bitCount <= 8) {
     data |= (bit << (bitCount - 1));
   }
 
   bitCount++;
   if (bitCount == 11) {
-    ps2_data = data;
-    ps2_data_ready = true;
+    if (data == 0xF0) {
+      breakCode = true; // cod de eliberare – ignorăm următorul
+    } else if (!breakCode) {
+      ps2_data = data;
+      ps2_data_ready = true;
+    } else {
+      breakCode = false; // resetăm pentru coduri viitoare
+    }
     bitCount = 0;
   }
 }
@@ -70,7 +75,6 @@ char ps2ReadKey() {
 }
 
 // --- Game logic ---
-
 const int screenWidth = 240;
 const int screenHeight = 320;
 const int boxWidth = 30;
@@ -81,19 +85,20 @@ const int gridHeight = 6 * boxHeight + 5 * boxSpacing;
 const int gridStartX = (screenWidth - gridWidth) / 2;
 const int gridStartY = (screenHeight - gridHeight) / 2;
 
-const char* wordList[100] = {
-  "APPLE", "BREAD", "CRANE", "DREAM", "EAGLE", "FAITH", "GRAIN", "HOUSE", "IRISH", "JUMPY",
-  "KHAKI", "LEMON", "MANGO", "NOBLE", "OCEAN", "PAINT", "QUERY", "RIVER", "SUGAR", "THUMB",
-  "UNION", "VIVID", "WATER", "XENON", "YEARN", "ZEBRA", "ACTOR", "BANJO", "CHAIR", "DODGE",
-  "EARTH", "FABLE", "GHOST", "HONEY", "INPUT", "JAZZY", "KNACK", "LASER", "MAGIC", "NEEDY",
-  "OPERA", "PRISM", "QUICK", "ROVER", "STEAM", "TOUCH", "UPPER", "VOICE", "WHISK", "XYLEM",
-  "YOUNG", "ZONED", "ANGEL", "BRAVE", "CLOVE", "DOUBT", "EXACT", "FLEET", "GRACE", "HORSE",
-  "INDEX", "JAUNT", "KAYAK", "LIGHT", "MIRTH", "NIGHT", "OPINE", "PLUMB", "QUEST", "ROUTE",
-  "STORY", "TRUTH", "USAGE", "VAULT", "WORTH", "XENIA", "YIELD", "ZAPPY", "AGILE", "BLAST",
-  "CHILL", "DRIFT", "ELATE", "FROZE", "GIANT", "HUMAN", "IMAGE", "JOKER", "KNEEL", "LODGE"
+const char* wordList[50] = {
+  "APPLE", "BREAD", "CLOUD", "DREAM", "EARTH",
+  "FAITH", "GRAPE", "HOUSE", "IMAGE", "JUICE",
+  "KNIFE", "LEMON", "MONEY", "NURSE", "OCEAN",
+  "PIZZA", "QUICK", "RAINY", "SUGAR", "TIGER",
+  "UNITY", "VIRUS", "WATER", "XENON", "YOUTH",
+  "ZEBRA", "ANGEL", "BEACH", "CANDY", "DOUBT",
+  "ENJOY", "FRUIT", "GIANT", "HAPPY", "INDEX",
+  "JOLLY", "KNEEL", "LIGHT", "MAGIC", "NIGHT",
+  "OPERA", "PARTY", "QUIET", "ROBOT", "SHINE",
+  "TRAIN", "URBAN", "VOICE", "WOMAN", "SPACE"
 };
+const int wordCount = 50;
 
-const int wordCount = 100;
 const int maxGuesses = 6;
 char guess[6] = {0};
 int charIndex = 0;
@@ -101,7 +106,7 @@ int currentGuess = 0;
 bool gameOver = false;
 const char* targetWord;
 
-const char* menuOptions[] = {"Reguli", "Joaca"};
+const char* menuOptions[] = {"Rules", "Play"};
 const int menuOptionCount = sizeof(menuOptions) / sizeof(menuOptions[0]);
 int currentOption = 0;
 const int menuX = 10;
@@ -114,20 +119,21 @@ const int titleSpacing = 50;
 const char* rulesText = "Wordle Rules:\n\n1. Guess the hidden word.\n2. You have 6 attempts.\n3. Each guess will be displayed.\n4. Green box: correct letter and pos.\n5. Yellow box: correct letter, wrong pos.\n6. Grey box: incorrect letter.\n\n Press BACKSPACE to return to main menu.";
 
 void resetGame() {
-  targetWord = wordList[random(0, wordCount)];
+  targetWord = wordList[random(wordCount)];
   currentGuess = 0;
   charIndex = 0;
   memset(guess, 0, sizeof(guess));
   gameOver = false;
 
-  // Clear the display and redraw the grid
   display.fillScreen(ILI9341_BLACK);
   display.setTextColor(ILI9341_WHITE);
   display.setTextSize(2);
 
   for (int i = 0; i < maxGuesses; i++) {
     for (int j = 0; j < 5; j++) {
-      display.drawRect(gridStartX + j * (boxWidth + boxSpacing), gridStartY + i * (boxHeight + boxSpacing), boxWidth, boxHeight, ILI9341_WHITE);
+      display.drawRect(gridStartX + j * (boxWidth + boxSpacing),
+                       gridStartY + i * (boxHeight + boxSpacing),
+                       boxWidth, boxHeight, ILI9341_WHITE);
     }
   }
 }
@@ -242,6 +248,7 @@ void setup() {
   pinMode(PS2_DATA, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PS2_CLK), ps2_clk_isr, FALLING);
   Serial.begin(9600);
+  randomSeed(analogRead(A0)); // pentru alegere aleatoare a cuvântului
   display.begin();
   display.setRotation(0);
   drawMenu();
@@ -252,45 +259,39 @@ void loop() {
 
   if (ps2KeyAvailable()) {
     char c = ps2ReadKey();
-
-    // Debounce simplu: ignoră dacă e repetat
     if (c == lastKey) return;
     lastKey = c;
 
     if (!gameOver) {
-      if (currentOption == 1 && c == '\n') { // PS2_ENTER
+      if (currentOption == 1 && c == '\n') {
         startWordleGame();
         lastKey = 0;
         return;
       }
     }
 
-    if (gameOver && c == 27) { // PS2_ESC
+    if (gameOver && c == 27) {
       resetGame();
       drawMenu();
       lastKey = 0;
       return;
     }
 
-    if (c == '^') { // PS2_UPARROW
+    if (c == '^') {
       currentOption--;
-      if (currentOption < 0) {
-        currentOption = menuOptionCount - 1;
-      }
+      if (currentOption < 0) currentOption = menuOptionCount - 1;
       drawMenu();
-    } else if (c == 'v') { // PS2_DOWNARROW
+    } else if (c == 'v') {
       currentOption++;
-      if (currentOption >= menuOptionCount) {
-        currentOption = 0;
-      }
+      if (currentOption >= menuOptionCount) currentOption = 0;
       drawMenu();
-    } else if (c == '\n') { // PS2_ENTER
+    } else if (c == '\n') {
       if (currentOption == 0) {
         showRulesPopup();
         lastKey = 0;
       }
     }
   } else {
-    lastKey = 0; // Reset debounce dacă nu e apăsat nimic
+    lastKey = 0;
   }
 }
